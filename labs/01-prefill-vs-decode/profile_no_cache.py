@@ -4,6 +4,7 @@ import time
 import statistics
 import matplotlib.pyplot as plt
 import numpy as np
+from pathlib import Path
 
 #AutoRegressive loop variables
 max_new_tokens=200
@@ -120,5 +121,5 @@ ax.grid(axis="y", color="#e5e4e0", linewidth=0.8)
 ax.spines[["top", "right"]].set_visible(False)
 
 fig.tight_layout()
-fig.savefig("Results/step_time_no_cache.png", dpi=150)
+fig.savefig(Path(__file__).parent / "results" / "step_time_no_cache.png", dpi=150)
 plt.show()
