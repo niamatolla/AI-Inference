@@ -1,4 +1,4 @@
-# LLM Inference Engineering — Hands-on Labs
+# LLM Inference Engineering Hands-on Labs
 
 A series of from-scratch experiments into how large language models actually run at inference time: where the time goes, why, and how serving systems make it faster. Each lab measures something on real hardware, explains the result from first principles (memory bandwidth, FLOPs, attention cost), and is written up as a short report.
 
