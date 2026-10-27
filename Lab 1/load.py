@@ -27,11 +27,30 @@ model.to(device)
 print("Running on:", device)
 
 #Tokenize the input text into PyTorch tensors
-prompt=" Inference only runs the forward pass, " \
-"the weights are frozen, to produce new tokens we dont have yet. " \
-"We produce them once at a time, and each one depends on the one before it"
+prompt=(
+    " Inference only runs the forward pass, "
+    "the weights are frozen, to produce new tokens we dont have yet. "
+    "We produce them once at a time, and each one depends on the one before it"
+)
 
-input_ids=tokenizer.encode(prompt, return_tensors="pt").to(device)
+four_time_longer_prompt=(
+    "Inference is the process where a trained language model uses its "
+    "existing knowledge to generate new text. During inference, the "
+    "model only performs the forward pass, meaning the input is passed "
+    "through the neural network to calculate predictions and determine "
+    "which token should come next. The model's weights remain frozen, "
+    "so they are not updated or modified during this process. Unlike "
+    "training, where the model learns by adjusting its weights based on "
+    "errors, inference simply uses the knowledge the model has already "
+    "learned. When generating a response, the model produces one new "
+    "token at a time. Each token is selected based on the input context "
+    "and the tokens generated before it. After generating a token, the "
+    "model adds it to the existing sequence and uses the updated context "
+    "to predict the next token. This process repeats until generation "
+    "stops."
+)
+
+input_ids=tokenizer.encode(four_time_longer_prompt, return_tensors="pt").to(device)
 
 #Feed the tokens to the model and generate new tokens : TTFT+199*TPOT
 #outputs=model.generate(**inputs, max_new_tokens=200)
