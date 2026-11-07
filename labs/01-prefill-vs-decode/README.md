@@ -1,4 +1,4 @@
-# Lab 1 — GPT-2 Inference Profiling: Prefill vs Decode (no KV cache)
+# Lab 1: GPT-2 Inference Profiling: Prefill vs Decode (no KV cache)
 
 **Full write-up:** [report.pdf](report.pdf) · **Code:** [profile_no_cache.py](profile_no_cache.py)
 
