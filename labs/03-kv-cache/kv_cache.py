@@ -45,8 +45,8 @@ input_ids=tokenizer.encode(prompt, return_tensors="pt").to(device)
 #so one-off MPS hiccups don't show up as spikes in the curves.
 n_runs=3
 
-#KV cache size, measured: the real bytes the cache occupies right now.
-#Sum over every layer of (key elements + value elements), times bytes per element.
+#KV cache size measured: the real bytes the cache occupies right now.
+#Sum over every layer of (key elements + value elements) times bytes per element.
 def kv_cache_bytes_measured(cache) -> int:
     total_elements=0
     for layer in cache.layers:
@@ -56,19 +56,17 @@ def kv_cache_bytes_measured(cache) -> int:
 
 #KV cache size, from the formula:
 #2 (K and V) x n_layers x n_heads x head_dim x seq_len x bytes
-#and since n_heads x head_dim = d_model, this is 2 x n_layers x d_model x seq_len x bytes
 def kv_cache_bytes_formula(seq_len: int, bytes_per_element: int) -> int:
     n_layers=model.config.n_layer
     n_heads=model.config.n_head
     head_dim=model.config.n_embd // n_heads
     return 2 * n_layers * n_heads * head_dim * seq_len * bytes_per_element
 
-#Both loops run a fixed max_new_tokens (no EOS early stop) so A and B
-#cover the same positions and their curves line up step for step.
+#Both loops run a fixed max_new_tokens so no EOS early stop 
+#A and B cover the same positions and their curves line up step for step.
 
 #Version A: No KV cache
 #Run the autoregressive loop without KV cache
-#Returns (step times in seconds, full token sequence)
 def run_no_cache(max_new_tokens: int,input_ids:torch.Tensor,temperature: float):
     times=[]
     for i in range(max_new_tokens):
@@ -94,9 +92,9 @@ def run_no_cache(max_new_tokens: int,input_ids:torch.Tensor,temperature: float):
 
 #Version B: With KV cache
 #Run the autoregressive loop with KV cache
-#Returns (step times in seconds, full token sequence)
 def run_with_cache(max_new_tokens: int,input_ids:torch.Tensor,temperature: float):
     times=[]
+    kv_sizes=[]
     cache=DynamicCache()
     for i in range(max_new_tokens):
         if(i == 0):
@@ -119,6 +117,9 @@ def run_with_cache(max_new_tokens: int,input_ids:torch.Tensor,temperature: float
         end_time = time.perf_counter()
         times.append(end_time-start_time)
 
+        #Record the cache size after the clock stops so measuring doesn't slow the timing
+        kv_sizes.append((cache.layers[0].keys.shape[2], kv_cache_bytes_measured(cache)))
+
         # Append the new token to the sequence
         input_ids=torch.cat([input_ids, next_token], dim=1)
     print("Cache type:", type(cache))
@@ -138,7 +139,7 @@ def run_with_cache(max_new_tokens: int,input_ids:torch.Tensor,temperature: float
     print(f"Per token: measured {measured/seq_len:,.0f} B ({measured/seq_len/1024:.1f} KB), "
           f"formula {formula/seq_len:,.0f} B")
 
-    return times, input_ids
+    return times, input_ids, kv_sizes
 
 #Warm-up: a few untimed steps of BOTH loops so MPS one-time setup is not counted.
 run_no_cache(max_new_tokens=5, input_ids=input_ids, temperature=temperature)
@@ -148,7 +149,8 @@ run_with_cache(max_new_tokens=5, input_ids=input_ids, temperature=temperature)
 runs_A, runs_B = [], []
 for r in range(n_runs):
     t_A, ids_A = run_no_cache(max_new_tokens=max_new_tokens, input_ids=input_ids, temperature=temperature)
-    t_B, ids_B = run_with_cache(max_new_tokens=max_new_tokens, input_ids=input_ids, temperature=temperature)
+    #kv_B: cache size is deterministic (same every run), so keeping the last run's log is enough
+    t_B, ids_B, kv_B = run_with_cache(max_new_tokens=max_new_tokens, input_ids=input_ids, temperature=temperature)
     runs_A.append(t_A)
     runs_B.append(t_B)
     print(f"Run {r+1}/{n_runs} done")
@@ -199,4 +201,42 @@ ax.legend(frameon=False, loc="upper left")
 fig.tight_layout()
 (Path(__file__).parent / "results").mkdir(exist_ok=True)
 fig.savefig(Path(__file__).parent / "results" / "step_time_cache_vs_no_cache.png", dpi=150)
+
+
+#Plot KV cache size (y) vs tokens in cache (x): measured from the tensors vs the formula
+kv_tokens=np.array([t for t, _ in kv_B])
+kv_measured_mb=np.array([b for _, b in kv_B]) / 1e6
+bytes_per_element=next(model.parameters()).element_size()
+#Draw the formula from 0 tokens so you can see it's a straight line through the origin
+formula_tokens=np.arange(0, kv_tokens[-1] + 1)
+kv_formula_mb=np.array([kv_cache_bytes_formula(t, bytes_per_element) for t in formula_tokens]) / 1e6
+
+fig2, ax2=plt.subplots(figsize=(10, 5))
+
+
+ax2.plot(formula_tokens, kv_formula_mb, color="#8a8984", linewidth=2, linestyle="--", zorder=4,
+         label=f"Formula: 2 × {model.config.n_layer} layers × {model.config.n_embd} × {bytes_per_element} B × tokens")
+ax2.plot(kv_tokens, kv_measured_mb, color="#2a78d6", linewidth=2,
+         label="Measured: sum of K and V tensor bytes")
+#Mark the first point: the cache right after prefill already holds the whole prompt
+ax2.scatter([kv_tokens[0]], [kv_measured_mb[0]], color="#2a78d6", s=64, zorder=3,
+            edgecolor="white", linewidth=2)
+ax2.annotate(f"After prefill: {kv_tokens[0]} tokens, {kv_measured_mb[0]:.1f} MB",
+             (kv_tokens[0], kv_measured_mb[0]), xytext=(10, -14),
+             textcoords="offset points", color="#52514e")
+ax2.annotate(f"{kv_tokens[-1]} tokens, {kv_measured_mb[-1]:.1f} MB",
+             (kv_tokens[-1], kv_measured_mb[-1]), xytext=(-6, 8),
+             textcoords="offset points", ha="right", color="#52514e")
+
+ax2.set_title("KV cache size as the sequence grows (GPT-2)")
+ax2.set_xlabel("Tokens in cache (prompt + generated)")
+ax2.set_ylabel("KV cache size (MB)")
+ax2.set_xlim(left=0)
+ax2.set_ylim(bottom=0)
+ax2.grid(axis="y", color="#e5e4e0", linewidth=0.8)
+ax2.spines[["top", "right"]].set_visible(False)
+ax2.legend(frameon=False, loc="upper left")
+
+fig2.tight_layout()
+fig2.savefig(Path(__file__).parent / "results" / "kv_cache_size.png", dpi=150)
 plt.show()
