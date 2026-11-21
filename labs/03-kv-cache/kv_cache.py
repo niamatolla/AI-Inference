@@ -41,11 +41,9 @@ input_ids=tokenizer.encode(prompt, return_tensors="pt").to(device)
 #Feed the tokens to the model and generate new tokens : TTFT+199*TPOT
 #outputs=model.generate(**inputs, max_new_tokens=200)
 
-#Warm-up: one untimed forward pass so MPS one time setup is not counted
-with torch.no_grad():
-    model(input_ids)
-if device.type == "mps":
-    torch.mps.synchronize()
+#Number of timed repeats per version; we plot the median step time per position
+#so one-off MPS hiccups don't show up as spikes in the curves.
+n_runs=3
 
 #Both loops run a fixed max_new_tokens (no EOS early stop) so A and B
 #cover the same positions and their curves line up step for step.
@@ -108,8 +106,22 @@ def run_with_cache(max_new_tokens: int,input_ids:torch.Tensor,temperature: float
 
     return times, input_ids
 
-times_A, ids_A = run_no_cache(max_new_tokens=max_new_tokens, input_ids=input_ids, temperature=temperature)
-times_B, ids_B = run_with_cache(max_new_tokens=max_new_tokens, input_ids=input_ids, temperature=temperature)
+#Warm-up: a few untimed steps of BOTH loops so MPS one-time setup is not counted.
+#A (use_cache=False) and B (use_cache=True, 1-token decode steps) hit different
+#code paths, so warming up only one of them would make the other's prefill look slow.
+run_no_cache(max_new_tokens=5, input_ids=input_ids, temperature=temperature)
+run_with_cache(max_new_tokens=5, input_ids=input_ids, temperature=temperature)
+
+#Timed runs: repeat each version n_runs times, keep the median per position
+runs_A, runs_B = [], []
+for r in range(n_runs):
+    t_A, ids_A = run_no_cache(max_new_tokens=max_new_tokens, input_ids=input_ids, temperature=temperature)
+    t_B, ids_B = run_with_cache(max_new_tokens=max_new_tokens, input_ids=input_ids, temperature=temperature)
+    runs_A.append(t_A)
+    runs_B.append(t_B)
+    print(f"Run {r+1}/{n_runs} done")
+times_A = np.median(np.array(runs_A), axis=0).tolist()
+times_B = np.median(np.array(runs_B), axis=0).tolist()
 
 #Correctness check: greedy decoding means A and B must produce identical tokens
 print("A and B generated identical tokens:", torch.equal(ids_A, ids_B))
@@ -126,30 +138,33 @@ for name, times in [("A (no cache)", times_A), ("B (KV cache)", times_B)]:
     print(f"Step 1: {times[1]*1000:.2f}ms, last step: {times[-1]*1000:.2f} ms")
 
 
-#Add Version B on the same axes.
-median=statistics.median(times_A[1:])
-#Plot step time (y) vs token position (x)
-step_ms=np.array(times_A)*1000
-positions=np.arange(len(step_ms))
+#Plot step time (y) vs token position (x) for A and B on the same axes
+series=[
+    ("A: no cache (recompute)", times_A, "#2a78d6"),
+    ("B: KV cache (reuse)",     times_B, "#eb6834"),
+]
 
 fig, ax=plt.subplots(figsize=(10, 5))
-ax.plot(positions, step_ms, color="#2a78d6", linewidth=2)
-#Highlight step 0 (prefill) so it stands apart from the decode steps
-ax.scatter([0], [step_ms[0]], color="#2a78d6", s=64, zorder=3)
-ax.annotate(f"Prefill (TTFT) {step_ms[0]:.1f} ms", (0, step_ms[0]),
-            xytext=(10, 10), textcoords="offset points", color="#52514e")
-ax.axhline(median*1000, color="#52514e", linewidth=1, linestyle="--")
-ax.annotate(f"Decode median {median*1000:.1f} ms", (len(step_ms)-1, median*1000),
-            xytext=(0, 6), textcoords="offset points", ha="right", color="#52514e")
+for label, times, color in series:
+    step_ms=np.array(times)*1000
+    positions=np.arange(len(step_ms))
+    ax.plot(positions, step_ms, color=color, linewidth=2, label=label)
+    #Mark step 0 (prefill) so it stands apart from the decode steps
+    ax.scatter([0], [step_ms[0]], color=color, s=64, zorder=3,
+               edgecolor="white", linewidth=2)
+    #Direct label at the end of each line
+    ax.annotate(f"{step_ms[-1]:.1f} ms", (positions[-1], step_ms[-1]),
+                xytext=(6, 0), textcoords="offset points", va="center", color="#52514e")
 
-ax.set_title("Step time per generated token (no KV cache)")
+ax.set_title(f"Step time per token: no cache vs KV cache (GPT-2, median of {n_runs} runs)")
 ax.set_xlabel("Token position (0 = prefill, 1+ = decode steps)")
 ax.set_ylabel("Step time (ms)")
 ax.set_ylim(bottom=0)
 ax.grid(axis="y", color="#e5e4e0", linewidth=0.8)
 ax.spines[["top", "right"]].set_visible(False)
+ax.legend(frameon=False, loc="upper left")
 
 fig.tight_layout()
 (Path(__file__).parent / "results").mkdir(exist_ok=True)
-fig.savefig(Path(__file__).parent / "results" / "step_time_no_cache.png", dpi=150)
+fig.savefig(Path(__file__).parent / "results" / "step_time_cache_vs_no_cache.png", dpi=150)
 plt.show()
