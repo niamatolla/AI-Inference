@@ -45,6 +45,24 @@ input_ids=tokenizer.encode(prompt, return_tensors="pt").to(device)
 #so one-off MPS hiccups don't show up as spikes in the curves.
 n_runs=3
 
+#KV cache size, measured: the real bytes the cache occupies right now.
+#Sum over every layer of (key elements + value elements), times bytes per element.
+def kv_cache_bytes_measured(cache) -> int:
+    total_elements=0
+    for layer in cache.layers:
+        total_elements += layer.keys.numel() + layer.values.numel()
+    bytes_per_element=cache.layers[0].keys.element_size()
+    return total_elements * bytes_per_element
+
+#KV cache size, from the formula:
+#2 (K and V) x n_layers x n_heads x head_dim x seq_len x bytes
+#and since n_heads x head_dim = d_model, this is 2 x n_layers x d_model x seq_len x bytes
+def kv_cache_bytes_formula(seq_len: int, bytes_per_element: int) -> int:
+    n_layers=model.config.n_layer
+    n_heads=model.config.n_head
+    head_dim=model.config.n_embd // n_heads
+    return 2 * n_layers * n_heads * head_dim * seq_len * bytes_per_element
+
 #Both loops run a fixed max_new_tokens (no EOS early stop) so A and B
 #cover the same positions and their curves line up step for step.
 
@@ -103,12 +121,26 @@ def run_with_cache(max_new_tokens: int,input_ids:torch.Tensor,temperature: float
 
         # Append the new token to the sequence
         input_ids=torch.cat([input_ids, next_token], dim=1)
+    print("Cache type:", type(cache))
+    print("Layer count:", len(cache))
+    print("Methods and attributes:", dir(cache))
+    print("Layer 0 keys:", cache.layers[0].keys.shape )
+    print("The number format of layer 0 keys:", cache.layers[0].keys.dtype)
+    print("Bytes per number:", cache.layers[0].keys.element_size())
+
+    #Measured vs formula
+    seq_len=cache.layers[0].keys.shape[2]
+    bytes_per_element=cache.layers[0].keys.element_size()
+    measured=kv_cache_bytes_measured(cache)
+    formula=kv_cache_bytes_formula(seq_len, bytes_per_element)
+    print(f"KV cache at {seq_len} tokens: measured {measured:,} B, formula {formula:,} B, "
+          f"match: {measured == formula}")
+    print(f"Per token: measured {measured/seq_len:,.0f} B ({measured/seq_len/1024:.1f} KB), "
+          f"formula {formula/seq_len:,.0f} B")
 
     return times, input_ids
 
 #Warm-up: a few untimed steps of BOTH loops so MPS one-time setup is not counted.
-#A (use_cache=False) and B (use_cache=True, 1-token decode steps) hit different
-#code paths, so warming up only one of them would make the other's prefill look slow.
 run_no_cache(max_new_tokens=5, input_ids=input_ids, temperature=temperature)
 run_with_cache(max_new_tokens=5, input_ids=input_ids, temperature=temperature)
 
