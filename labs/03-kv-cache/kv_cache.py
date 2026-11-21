@@ -120,7 +120,8 @@ def run_with_cache(max_new_tokens: int,input_ids:torch.Tensor,temperature: float
         #Record the cache size after the clock stops so measuring doesn't slow the timing
         kv_sizes.append((cache.layers[0].keys.shape[2], kv_cache_bytes_measured(cache)))
 
-        # Append the new token to the sequence
+        # Keep a record of the full sequence, the model doesn't need it anymore
+        # it only sees next_token + cache, so we can decode the text and compare with A
         input_ids=torch.cat([input_ids, next_token], dim=1)
     print("Cache type:", type(cache))
     print("Layer count:", len(cache))
@@ -170,6 +171,14 @@ for name, times in [("A (no cache)", times_A), ("B (KV cache)", times_B)]:
     print(f"Prefill (TTFT): {times[0]*1000:.2f}ms")
     print(f"Decode: median {statistics.median(decode)*1000:.2f} ms, mean {sum(decode)/len(decode)*1000:.2f} ms")
     print(f"Step 1: {times[1]*1000:.2f}ms, last step: {times[-1]*1000:.2f} ms")
+
+#Speedup (A time / B time) at a few positions, to see if it grows with sequence length
+print("--- Speedup A/B by position ---")
+prompt_len=input_ids.shape[1]
+for pos in [0, 1, 50, 100, 150, len(times_A)-1]:
+    print(f"Position {pos:3d} ({prompt_len+pos} tokens in sequence): "
+          f"A {times_A[pos]*1000:6.2f} ms, B {times_B[pos]*1000:6.2f} ms, "
+          f"speedup {times_A[pos]/times_B[pos]:.2f}x")
 
 
 #Plot step time (y) vs token position (x) for A and B on the same axes
